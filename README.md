@@ -64,23 +64,23 @@ make compose-down
 ### Public 배포 (nginx + HTTPS)
 
 번들된 nginx 리버스 프록시를 `proxy` 프로파일로 띄우면 `:80`/`:443` 한 곳에서 받아
-`/api/*` 는 백엔드로 직접, 나머지는 프런트엔드로 보냅니다 (Next.js 의 `/api` rewrite 한
-홉을 건너뛰어 큰 본문/HTTPS 종단 시 발생하던 500 회피).
+`/api/*` 는 백엔드로 직접, 나머지는 프런트엔드로 보냅니다.
+
+인증서 파일을 `nginx/certs/` 에 넣으면 자동으로 HTTPS 모드로 기동합니다.
+인증서가 없으면 HTTP 전용으로 동작합니다.
 
 ```bash
 # 1) 인증서 배치 (Let's Encrypt 등에서 발급)
 cp /etc/letsencrypt/live/your.domain/fullchain.pem nginx/certs/
 cp /etc/letsencrypt/live/your.domain/privkey.pem   nginx/certs/
 
-# 2) HTTPS 활성화: nginx/default.conf 의 443 server 블록과 :80 의 redirect 라인
-#    주석을 해제하고 server_name 을 본인 도메인으로 변경
+# 2) .env 설정
+echo 'PUBLIC_DOMAIN=your.domain.example.com' >> .env
+echo 'BACKEND_BIND=127.0.0.1'                >> .env
+echo 'FRONTEND_BIND=127.0.0.1'               >> .env
 
-# 3) .env 에서 업스트림을 인터넷에 직접 노출하지 않도록 잠금
-echo 'BACKEND_BIND=127.0.0.1'  >> .env
-echo 'FRONTEND_BIND=127.0.0.1' >> .env
-
-# 4) 기동
-make compose-up-proxy      # docker compose --profile proxy up -d --build
+# 3) 기동
+make compose-up-proxy
 ```
 
 - `client_max_body_size 25m` / `proxy_read_timeout 60s` / 정확한 `X-Forwarded-*`
