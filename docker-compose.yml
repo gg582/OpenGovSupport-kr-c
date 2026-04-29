@@ -1,12 +1,23 @@
 # Single-host stack: Go backend + Next.js frontend on a shared bridge.
 #
-#   docker compose up --build              # foreground
-#   docker compose up -d --build           # detached
-#   docker compose logs -f backend         # tail one service
-#   docker compose down                    # stop & remove
+# ── Local dev (direct container access) ────────────────────────────────
+#   docker compose up -d --build
+#   # frontend → http://localhost:31778, backend → http://localhost:31777
 #
-# Open the app at http://localhost:31778  (frontend reverse-proxies /api/* to backend).
-# Direct backend access: http://localhost:31777  (e.g. /api/runtime/stats).
+# ── Public deployment (HTTPS via the bundled nginx) ────────────────────
+#   1) Drop fullchain.pem + privkey.pem into ./nginx/certs/
+#   2) Edit ./nginx/default.conf and uncomment the 443 server block
+#      (and the http→https redirect in the :80 server).
+#   3) In .env, set:
+#        PUBLIC_DOMAIN=your.domain.example.com
+#        BACKEND_BIND=127.0.0.1     # don't expose backend to the internet
+#        FRONTEND_BIND=127.0.0.1    # don't expose frontend to the internet
+#   4) make compose-up-proxy
+#      # nginx listens on :80 and :443, proxies / → frontend, /api/* → backend
+#
+# nginx routes /api/* DIRECTLY to the Go backend instead of going through
+# Next.js' /api rewrite. That removes one hop and is the main reason the
+# old setup could surface HTTP 500 under load or large bodies.
 
 name: opengovsupport
 
@@ -27,14 +38,18 @@ services:
       GOGC_TARGET: "${GOGC_TARGET:-300}"
       GOMAXPROCS: "${GOMAXPROCS:-0}"   # 0 = use container's CPU quota
       JSON_INDENT: "${JSON_INDENT:-0}" # set to "1" in dev for readable JSON
+    expose:
+      - "8080"
+    # Bind address is configurable. Default 0.0.0.0 keeps existing dev
+    # behavior; for production behind nginx, set BACKEND_BIND=127.0.0.1
+    # in .env so only the proxy can reach the backend.
     ports:
-      - "${BACKEND_PORT:-31777}:8080"
+      - "${BACKEND_BIND:-0.0.0.0}:${BACKEND_PORT:-31777}:8080"
     networks:
       - app
-    # distroless has no shell — use the binary itself as a healthcheck via
-    # an HTTP probe from the frontend container instead. Compose's built-in
-    # `healthcheck` here uses CMD-SHELL which won't work without /bin/sh,
-    # so we leave it off and rely on `restart: unless-stopped`.
+    # distroless has no shell — no CMD-SHELL healthcheck. We rely on
+    # `restart: unless-stopped`. nginx upstream failures will surface as
+    # 502, never 500, when the backend is down.
     deploy:
       resources:
         limits:
@@ -55,12 +70,14 @@ services:
       # destination. We pass it again at runtime for any server-side fetch
       # in app/lib/api.ts (listFeatures / callFeature on the server).
       BACKEND_URL: "http://backend:8080"
-      # Required so Next.js binds 0.0.0.0 in the container.
+      # Required so Next.js binds 0.0.0.0 inside the container.
       HOSTNAME: "0.0.0.0"
     depends_on:
       - backend
+    expose:
+      - "3000"
     ports:
-      - "${FRONTEND_PORT:-31778}:3000"
+      - "${FRONTEND_BIND:-0.0.0.0}:${FRONTEND_PORT:-31778}:3000"
     networks:
       - app
     healthcheck:
@@ -74,6 +91,34 @@ services:
         limits:
           cpus: "${FRONTEND_CPUS:-1.0}"
           memory: "${FRONTEND_MEMORY:-512M}"
+
+  # ── reverse proxy (opt-in via `--profile proxy`) ───────────────────────
+  # Listens on :80 and :443 and dispatches:
+  #   /        → frontend:3000   (Next.js SSR + static)
+  #   /api/*   → backend:8080    (skips Next.js rewrite — fewer hops, no 500s)
+  # Config lives in ./nginx/default.conf; certs in ./nginx/certs/.
+  proxy:
+    image: nginx:1.27-alpine
+    container_name: opengovsupport-proxy
+    restart: unless-stopped
+    profiles: ["proxy"]
+    depends_on:
+      - backend
+      - frontend
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    networks:
+      - app
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
 networks:
   app:

@@ -61,6 +61,33 @@ make compose-down
 - 두 컨테이너는 `app` 브리지 네트워크에 합류, 프런트엔드는 `BACKEND_URL=http://backend:8080` 으로 백엔드를 호출
 - `.env` 의 변수로 `POOL_WORKERS / POOL_QUEUE / GOGC_TARGET / JSON_INDENT / *_CPUS / *_MEMORY` 모두 외부에서 조정 가능
 
+### Public 배포 (nginx + HTTPS)
+
+번들된 nginx 리버스 프록시를 `proxy` 프로파일로 띄우면 `:80`/`:443` 한 곳에서 받아
+`/api/*` 는 백엔드로 직접, 나머지는 프런트엔드로 보냅니다 (Next.js 의 `/api` rewrite 한
+홉을 건너뛰어 큰 본문/HTTPS 종단 시 발생하던 500 회피).
+
+```bash
+# 1) 인증서 배치 (Let's Encrypt 등에서 발급)
+cp /etc/letsencrypt/live/your.domain/fullchain.pem nginx/certs/
+cp /etc/letsencrypt/live/your.domain/privkey.pem   nginx/certs/
+
+# 2) HTTPS 활성화: nginx/default.conf 의 443 server 블록과 :80 의 redirect 라인
+#    주석을 해제하고 server_name 을 본인 도메인으로 변경
+
+# 3) .env 에서 업스트림을 인터넷에 직접 노출하지 않도록 잠금
+echo 'BACKEND_BIND=127.0.0.1'  >> .env
+echo 'FRONTEND_BIND=127.0.0.1' >> .env
+
+# 4) 기동
+make compose-up-proxy      # docker compose --profile proxy up -d --build
+```
+
+- `client_max_body_size 25m` / `proxy_read_timeout 60s` / 정확한 `X-Forwarded-*`
+  헤더가 기본 세팅되어 PDF 출력 같은 큰 POST 도 안전합니다.
+- `nginx/certs/` 는 `.gitignore` 처리되어 커밋되지 않습니다.
+- `HTTP_PORT` / `HTTPS_PORT` 는 `.env` 에서 변경 가능 (예: 사내망에서 8080/8443).
+
 ## 디자인 원칙
 
 - **모든 기능이 홈 화면에서 즉시 보임.** `domain.AllFeatures()` 가 단일 진실의 원천이고,

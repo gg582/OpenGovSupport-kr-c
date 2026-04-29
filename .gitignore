@@ -53,6 +53,11 @@ pnpm-debug.log*
 *.pid
 docker-compose.override.yml
 
+# --- nginx (reverse-proxy profile) ---
+# Never commit TLS material. Keep the directory itself tracked via .gitkeep.
+nginx/certs/*
+!nginx/certs/.gitkeep
+
 # --- 로그 / 캐시 ---
 *.log
 logs/
