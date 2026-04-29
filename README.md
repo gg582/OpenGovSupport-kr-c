@@ -2,39 +2,13 @@
 
 사회복지 업무에서 자주 쓰이는 계산 16종(사적이전소득·이자소득 공제·재산상담·
 상속분·긴급공제·해외체류 등)을 **C23 + Next.js** 로 구현한 웹 앱입니다.
-중위소득·차감율·기준금액 등은 모두 법령에 근거한 공개정보이므로
-`src/backend/domain/standards.go` 에 직접 박아두고, 폼 기본값으로도 노출합니다.
-
-## 구조
-
-```
-/Makefile                  ← `make run` 한 줄로 프런트+백엔드 동시 기동
-/src/
-  /backend/                ← Go (stdlib only, net/http)
-    main.go
-    domain/
-      features.go          ← Feature 매니페스트 (UI 폼 자동 생성용)
-      standards.go         ← 법령 기반 공개 기준값 (중위소득·차감율 등)
-      util.go
-    handlers/              ← 도메인별 HTTP 핸들러
-  /frontend/               ← Next.js (App Router)
-    app/
-      page.tsx             ← 모든 기능을 한 화면에서 보여주는 홈
-      features/[...id]/    ← 동적 기능 페이지 (Feature 매니페스트로 폼 자동 생성)
-      components/, lib/
-```
 
 ## 실행
 
-### 로컬 (Go + Node 직접)
 
 ```bash
 make run
 ```
-
-- 백엔드 :8080 (`go run ./...`)
-- 프런트엔드 :3000 (`npm run dev`, `/api/*` → 백엔드로 rewrite)
-- 첫 실행 시 `npm install` 과 `go mod download` 가 자동으로 실행됩니다.
 
 원하면 따로 띄울 수도 있습니다:
 
@@ -121,39 +95,3 @@ make compose-up-proxy
 | 공용         | 초기차감금액 | `POST /api/shared/initial-deduction` |
 | 이벤트       | 재산변동 시트 | `POST /api/events/property-sheet` |
 
-## 런타임 계층 (`src/backend/runtime/`)
-
-부하 처리 / 가용성 / 지연 최소화를 위해 핸들러 위에 다음 4단 미들웨어를 둡니다.
-모든 모듈은 stdlib 만 사용합니다.
-
-| 모듈 | 역할 |
-|---|---|
-| `runtime/pool.go`  | 바운디드 워커 풀 + 2단 우선순위 큐 (fast / slow). `Content-Length` 가 `POOL_FAST_THRESHOLD` (기본 4 KiB) 미만이면 fast 레인. 워커 수는 `POOL_WORKERS` (기본 = `NumCPU`). 큐가 다 차면 503 + `Retry-After` 로 백프레셔. |
-| `runtime/batch.go` | 단일플라이트 코얼레서. method+path+body 해시가 같은 동시 요청은 한 번만 실제로 계산하고 결과를 모든 호출자에게 fan-out. 같은 단순 요청이 폭주해도 핸들러 호출이 압축됩니다. |
-| `runtime/numerics/` | SIMD-ready 추상화. 공개 API(`Sum`/`Dot`/`Scale`/`MaxFloat` 등) 만 노출하고, 내부 구현은 build tag 로 portable Go ↔ asm SIMD 사이를 전환합니다. 호출자는 어떤 구현이 활성인지 알 수 없습니다. 자세한 사용/확장 가이드는 `runtime/numerics/doc.go`. |
-| `/api/runtime/stats` | 풀/코얼레서 상태 노출(워커 수, 큐 깊이, 누적 처리/거절 수, 평균 지연, 코얼레스 히트율). |
-
-**미들웨어 체인 순서** (`main.go`):
-
-```
-CORS → 로깅 → Pool → Coalescer → mux → 도메인 핸들러
-```
-
-벤치 (실측): 동일 본문으로 50개 동시 POST 시 코얼레서가 ~50% 를 즉시 fan-out 으로
-처리하고 평균 지연 ~140 µs 유지. `runtime/numerics.Sum` 1024 요소 SIMD-친화 unrolled
-루프 ~247 ns/op (제로 할당). `make bench` 로 직접 측정 가능합니다.
-
-**환경 변수**
-
-| 변수 | 기본값 | 설명 |
-|---|---|---|
-| `POOL_WORKERS` | `runtime.NumCPU()` | 워커 고루틴 수 |
-| `POOL_QUEUE` | 1024 | 레인 당 큐 용량 |
-| `POOL_FAST_THRESHOLD` | 4096 | fast 레인 진입 바이트 임계값 |
-
-## 의존성
-
-- Go ≥ 1.22 (ServeMux pattern matching, atomic.Int64)
-- Node ≥ 18, npm
-
-서드파티 라이브러리는 사용하지 않습니다 (Next.js 와 React 만 npm 의존).
